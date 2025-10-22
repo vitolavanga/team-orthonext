@@ -1,7 +1,6 @@
-# --- Team Orthonext: FastAPI single-file app (Render-ready) ---
+# --- Team Orthonext: FastAPI single-file (no static writes, Render-ready) ---
 from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from sqlmodel import SQLModel, Field, Session, select, create_engine
@@ -11,52 +10,16 @@ from datetime import datetime
 from passlib.hash import bcrypt
 import os, pathlib
 
-# ============================================================
-# App & Config
-# ============================================================
-
 app = FastAPI()
 
-# Secret per le sessioni (impostalo su Render: Environment -> APP_SECRET)
+# ===== Sessions =====
 SECRET = os.getenv("APP_SECRET", "CAMBIA_QUESTA_STRINGA_LUNGA_RANDOM")
 app.add_middleware(SessionMiddleware, secret_key=SECRET)
 
-# ---- Static (usiamo /tmp che è scrivibile su Render) ----
-STATIC_DIR = os.getenv("STATIC_DIR", "/tmp/static")
-os.makedirs(STATIC_DIR, exist_ok=True)
-css_path = os.path.join(STATIC_DIR, "style.css")
-if not os.path.exists(css_path):
-    try:
-        with open(css_path, "w") as f:
-            f.write("""*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#f7f7fb;color:#111}
-a{color:#0b66ff;text-decoration:none}.logo{font-weight:800;font-size:20px}.logo span{color:#0b66ff}
-.container{max-width:980px;margin:0 auto;padding:16px}
-.header{display:flex;justify-content:space-between;align-items:center;background:white;border-bottom:1px solid #e8e8ef}
-.header nav a{margin-left:12px;padding:8px 10px;border-radius:8px}.header nav a.primary{background:#0b66ff;color:white}
-.hero{padding:40px 0}
-h1{font-size:36px;line-height:1.2}h2{margin-top:24px}
-.button{display:inline-block;padding:10px 14px;border:1px solid #ddd;border-radius:8px;background:white}
-.button.primary{background:#0b66ff;color:#fff;border-color:#0b66ff}.button.small{font-size:12px;padding:6px 8px}
-.card{background:white;border:1px solid #e8e8ef;border-radius:10px;padding:16px;margin:10px 0}
-.form label{display:block;margin-bottom:10px}.form input,.form textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px}
-.error{background:#ffe9e9;border:1px solid #ffc2c2;padding:8px 10px;border-radius:8px;margin-bottom:10px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
-.search{display:flex;gap:8px;margin:10px 0}.search input{flex:1}
-.bullets{line-height:1.9}
-.footer{color:#666}
-.inline{display:inline}
-.stack .card{margin-bottom:8px}""")
-    except Exception:
-        pass
-
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-# ---- Database (Render-friendly) ----
-# Se monti un Disk a /data su Render, imposta:
-#   DATABASE_URL = sqlite:////data/db.sqlite3
+# ===== Database (persistent se hai un Disk su /data) =====
+# Su Render -> Environment:
+#   DATABASE_URL = sqlite:////data/db.sqlite3   (consigliato con Disk)
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/db.sqlite3")
-
-# Crea la cartella che contiene il file SQLite, se necessario
 if DATABASE_URL.startswith("sqlite:////"):
     db_path = DATABASE_URL.replace("sqlite:////", "/")
 elif DATABASE_URL.startswith("sqlite:///"):
@@ -68,10 +31,7 @@ if db_path:
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
-# ============================================================
-# Modelli
-# ============================================================
-
+# ===== Models =====
 class TeamLink(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     from_user_id: int = Field(foreign_key="user.id")
@@ -94,44 +54,42 @@ class User(SQLModel, table=True):
     availability: str = Field(default="")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-# ============================================================
-# Auth utils
-# ============================================================
-
+# ===== Auth utils =====
 SESSION_KEY = "session_user_id"
-
-def hash_password(pw: str) -> str:
-    return bcrypt.hash(pw)
-
-def verify_password(pw: str, hashed: str) -> bool:
-    return bcrypt.verify(pw, hashed)
-
-def get_current_user_id(request: Request) -> Optional[int]:
-    return request.session.get(SESSION_KEY)
-
-def login_user(request: Request, user_id: int) -> None:
-    request.session[SESSION_KEY] = user_id
-
-def logout_user(request: Request) -> None:
-    request.session.pop(SESSION_KEY, None)
-
+def hash_password(pw: str) -> str: return bcrypt.hash(pw)
+def verify_password(pw: str, hashed: str) -> bool: return bcrypt.verify(pw, hashed)
+def get_current_user_id(request: Request) -> Optional[int]: return request.session.get(SESSION_KEY)
+def login_user(request: Request, user_id: int) -> None: request.session[SESSION_KEY] = user_id
+def logout_user(request: Request) -> None: request.session.pop(SESSION_KEY, None)
 def require_login(request: Request) -> int:
     uid = get_current_user_id(request)
-    if not uid:
-        raise HTTPException(status_code=401, detail="Login richiesto")
+    if not uid: raise HTTPException(status_code=401, detail="Login richiesto")
     return uid
 
-# ============================================================
-# Startup
-# ============================================================
-
+# ===== Startup =====
 @app.on_event("startup")
 def on_startup():
     SQLModel.metadata.create_all(engine)
 
-# ============================================================
-# Template HTML basilare
-# ============================================================
+# ===== Base layout (CSS inline: niente /static) =====
+BASE_CSS = """*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#f7f7fb;color:#111}
+a{color:#0b66ff;text-decoration:none}.logo{font-weight:800;font-size:20px}.logo span{color:#0b66ff}
+.container{max-width:980px;margin:0 auto;padding:16px}
+.header{display:flex;justify-content:space-between;align-items:center;background:white;border-bottom:1px solid #e8e8ef}
+.header nav a{margin-left:12px;padding:8px 10px;border-radius:8px}.header nav a.primary{background:#0b66ff;color:white}
+.hero{padding:40px 0}
+h1{font-size:36px;line-height:1.2}h2{margin-top:24px}
+.button{display:inline-block;padding:10px 14px;border:1px solid #ddd;border-radius:8px;background:white}
+.button.primary{background:#0b66ff;color:#fff;border-color:#0b66ff}.button.small{font-size:12px;padding:6px 8px}
+.card{background:white;border:1px solid #e8e8ef;border-radius:10px;padding:16px;margin:10px 0}
+.form label{display:block;margin-bottom:10px}.form input,.form textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px}
+.error{background:#ffe9e9;border:1px solid #ffc2c2;padding:8px 10px;border-radius:8px;margin-bottom:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.search{display:flex;gap:8px;margin:10px 0}.search input{flex:1}
+.bullets{line-height:1.9}
+.footer{color:#666}
+.inline{display:inline}
+.stack .card{margin-bottom:8px}"""
 
 def layout(user, content, title="Team Orthonext"):
     nav = (f'''
@@ -140,7 +98,7 @@ def layout(user, content, title="Team Orthonext"):
     ''')
     return f"""<!doctype html><html lang="it"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title><link rel="stylesheet" href="/static/style.css"></head>
+<title>{title}</title><style>{BASE_CSS}</style></head>
 <body>
 <header class="container header"><a href="/" class="logo">Team <span>Orthonext</span></a><nav>{nav}</nav></header>
 <main class="container">{content}</main>
@@ -160,10 +118,7 @@ def form_row(label, name, value="", type_="text"):
         return f'<label>{label}<textarea name="{name}" rows="4">{value or ""}</textarea></label>'
     return f'<label>{label}<input type="{type_}" name="{name}" value="{value or ""}"></label>'
 
-# ============================================================
-# Rotte principali
-# ============================================================
-
+# ===== Routes =====
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     uid = get_current_user_id(request)
@@ -172,6 +127,10 @@ def home(request: Request):
         with Session(engine) as s:
             user = s.get(User, uid)
     return layout(user, home_tpl(user))
+
+@app.get("/health", response_class=PlainTextResponse)
+def health():
+    return "ok"
 
 @app.get("/register", response_class=HTMLResponse)
 def register_form(request: Request):
@@ -224,10 +183,6 @@ def login(request: Request, email: str = Form(...), password: str = Form(...)):
 def logout(request: Request):
     logout_user(request)
     return RedirectResponse(url="/", status_code=303)
-
-# ============================================================
-# Profilo / Onboarding / Directory
-# ============================================================
 
 @app.get("/onboarding", response_class=HTMLResponse)
 def onboarding_form(request: Request):
@@ -333,10 +288,6 @@ def surgeons_list(request: Request, q: Optional[str] = None):
 <div class="grid">{''.join(cards)}</div>"""
     return layout(me, content, "Chirurghi — Team Orthonext")
 
-# ============================================================
-# Team: inviti & Inbox
-# ============================================================
-
 @app.post("/team/request")
 def team_request(request: Request, to_user_id: int = Form(...)):
     uid = require_login(request)
@@ -364,12 +315,8 @@ def team_respond(request: Request, link_id: int = Form(...), action: str = Form(
 def inbox(request: Request):
     uid = require_login(request)
     with Session(engine) as s:
-        incoming = s.exec(
-            select(TeamLink).where(TeamLink.to_user_id == uid).order_by(TeamLink.created_at.desc())
-        ).all()
-        outgoing = s.exec(
-            select(TeamLink).where(TeamLink.from_user_id == uid).order_by(TeamLink.created_at.desc())
-        ).all()
+        incoming = s.exec(select(TeamLink).where(TeamLink.to_user_id == uid).order_by(TeamLink.created_at.desc())).all()
+        outgoing = s.exec(select(TeamLink).where(TeamLink.from_user_id == uid).order_by(TeamLink.created_at.desc())).all()
         me = s.get(User, uid)
 
     def row_in(l):
