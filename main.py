@@ -1,15 +1,70 @@
-# --- Team Orthonext: single-file FastAPI app (Deploy-friendly) ---
+# --- Team Orthonext: FastAPI app ottimizzata per Render ---
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlmodel import SQLModel, Session, create_engine, select, Field
+from sqlmodel import SQLModel, Session, select, Field
 from typing import Optional
 from datetime import datetime
 from passlib.hash import bcrypt
 from starlette.middleware.sessions import SessionMiddleware
-import os
+import os, pathlib
 
-# ====== MODELS ======
+# ============================================================
+# CONFIGURAZIONE BASE
+# ============================================================
+
+app = FastAPI()
+SECRET = os.getenv("APP_SECRET", "CAMBIA_QUESTA_STRINGA_LUNGA_RANDOM")
+app.add_middleware(SessionMiddleware, secret_key=SECRET)
+
+# ----- STATIC DIRECTORY (compatibile con Render) -----
+STATIC_DIR = os.getenv("STATIC_DIR", "/tmp/static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+css_path = os.path.join(STATIC_DIR, "style.css")
+if not os.path.exists(css_path):
+    try:
+        with open(css_path, "w") as f:
+            f.write("""*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#f7f7fb;color:#111}
+a{color:#0b66ff;text-decoration:none}.logo{font-weight:800;font-size:20px}.logo span{color:#0b66ff}
+.container{max-width:980px;margin:0 auto;padding:16px}
+.header{display:flex;justify-content:space-between;align-items:center;background:white;border-bottom:1px solid #e8e8ef}
+.header nav a{margin-left:12px;padding:8px 10px;border-radius:8px}.header nav a.primary{background:#0b66ff;color:white}
+.hero{padding:40px 0}
+h1{font-size:36px;line-height:1.2}h2{margin-top:24px}
+.button{display:inline-block;padding:10px 14px;border:1px solid #ddd;border-radius:8px;background:white}
+.button.primary{background:#0b66ff;color:#fff;border-color:#0b66ff}.button.small{font-size:12px;padding:6px 8px}
+.card{background:white;border:1px solid #e8e8ef;border-radius:10px;padding:16px;margin:10px 0}
+.form label{display:block;margin-bottom:10px}.form input,.form textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px}
+.error{background:#ffe9e9;border:1px solid #ffc2c2;padding:8px 10px;border-radius:8px;margin-bottom:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.search{display:flex;gap:8px;margin:10px 0}.search input{flex:1}
+.bullets{line-height:1.9}
+.footer{color:#666}
+.inline{display:inline}
+.stack .card{margin-bottom:8px}""")
+    except Exception:
+        pass
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# ----- DATABASE (compatibile con Render) -----
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/db.sqlite3")
+if DATABASE_URL.startswith("sqlite:////"):
+    db_path = DATABASE_URL.replace("sqlite:////", "/")
+elif DATABASE_URL.startswith("sqlite:///"):
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+else:
+    db_path = None
+if db_path:
+    pathlib.Path(os.path.dirname(db_path) or ".").mkdir(parents=True, exist_ok=True)
+
+from sqlmodel import create_engine
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+# ============================================================
+# MODELLI DATABASE
+# ============================================================
+
 class TeamLink(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     from_user_id: int = Field(foreign_key="user.id")
@@ -32,7 +87,10 @@ class User(SQLModel, table=True):
     availability: str = Field(default="")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-# ====== AUTH HELPERS ======
+# ============================================================
+# UTILITY AUTENTICAZIONE
+# ============================================================
+
 SESSION_KEY = "session_user_id"
 def hash_password(pw: str) -> str: return bcrypt.hash(pw)
 def verify_password(pw: str, hashed: str) -> bool: return bcrypt.verify(pw, hashed)
@@ -41,49 +99,22 @@ def login_user(request: Request, user_id: int) -> None: request.session[SESSION_
 def logout_user(request: Request) -> None: request.session.pop(SESSION_KEY, None)
 def require_login(request: Request) -> int:
     uid = get_current_user_id(request)
-    if not uid: raise HTTPException(status_code=401, detail="Login required")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Login richiesto")
     return uid
 
-# ====== APP & DB ======
-app = FastAPI()
-SECRET = os.getenv("APP_SECRET", "CAMBIA_QUESTA_STRINGA_MOLTO_LUNGA_E_CASUALE")
-app.add_middleware(SessionMiddleware, secret_key=SECRET)
-
-os.makedirs("static", exist_ok=True)
-with open("static/style.css", "w") as f:
-    f.write("""*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#f7f7fb;color:#111}
-a{color:#0b66ff;text-decoration:none}.logo{font-weight:800;font-size:20px}.logo span{color:#0b66ff}
-.container{max-width:980px;margin:0 auto;padding:16px}
-.header{display:flex;justify-content:space-between;align-items:center;background:white;border-bottom:1px solid #e8e8ef}
-.header nav a{margin-left:12px;padding:8px 10px;border-radius:8px}.header nav a.primary{background:#0b66ff;color:white}
-.hero{padding:40px 0}
-h1{font-size:36px;line-height:1.2}h2{margin-top:24px}
-.button{display:inline-block;padding:10px 14px;border:1px solid #ddd;border-radius:8px;background:white}
-.button.primary{background:#0b66ff;color:#fff;border-color:#0b66ff}.button.small{font-size:12px;padding:6px 8px}
-.card{background:white;border:1px solid #e8e8ef;border-radius:10px;padding:16px;margin:10px 0}
-.form label{display:block;margin-bottom:10px}.form input,.form textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px}
-.error{background:#ffe9e9;border:1px solid #ffc2c2;padding:8px 10px;border-radius:8px;margin-bottom:10px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
-.search{display:flex;gap:8px;margin:10px 0}.search input{flex:1}
-.bullets{line-height:1.9}
-.footer{color:#666}
-.inline{display:inline}
-.stack .card{margin-bottom:8px}""")
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-DATABASE_URL = "sqlite:///./db.sqlite3"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# ============================================================
+# STARTUP
+# ============================================================
 
 @app.on_event("startup")
 def on_startup():
     SQLModel.metadata.create_all(engine)
 
-def db():
-    with Session(engine) as session:
-        yield session
+# ============================================================
+# TEMPLATE BASE
+# ============================================================
 
-# ====== SIMPLE TEMPLATES (inline) ======
 def layout(user, content, title="Team Orthonext"):
     nav = (f'''
       <a href="/surgeons">Chirurghi</a>
@@ -102,23 +133,19 @@ def home_tpl(user):
     return f"""
 <section class="hero">
   <h1>Fai squadra con i migliori <em>chirurghi ortopedici</em>.</h1>
-  <p>Registrati, crea il profilo (colonna, anca, ginocchio, spalla…), trova colleghi per sala operatoria e progetti.</p>
+  <p>Registrati, crea il tuo profilo e trova colleghi per sala operatoria o casi complessi.</p>
   {('<p><a class="button" href="/surgeons">Cerca colleghi</a> <a class="button" href="/inbox">Inbox inviti</a></p>' if user else '<p><a class="button primary" href="/register">Crea il mio profilo</a></p>')}
-</section>
-<section><h2>Funzioni chiave (MVP)</h2>
-<ul class="bullets">
-<li>Registrazione/login sicuri</li>
-<li>Profilo con sottospecialità, regione, ospedali</li>
-<li>Ricerca e inviti “entra nel mio team”</li>
-<li>Inbox per accettare/declinare</li>
-</ul></section>"""
+</section>"""
 
 def form_row(label, name, value="", type_="text"):
     if type_ == "textarea":
         return f'<label>{label}<textarea name="{name}" rows="4">{value or ""}</textarea></label>'
     return f'<label>{label}<input type="{type_}" name="{name}" value="{value or ""}"></label>'
 
-# ====== ROUTES ======
+# ============================================================
+# ROTTE PRINCIPALI
+# ============================================================
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     uid = get_current_user_id(request)
@@ -180,6 +207,10 @@ def logout(request: Request):
     logout_user(request)
     return RedirectResponse(url="/", status_code=303)
 
+# ============================================================
+# PROFILO, ONBOARDING E RICERCA
+# ============================================================
+
 @app.get("/onboarding", response_class=HTMLResponse)
 def onboarding_form(request: Request):
     uid = get_current_user_id(request)
@@ -196,8 +227,8 @@ def onboarding_form(request: Request):
   {form_row('Città','city', user.city)}
   {form_row('Ospedali / Strutture','hospital_affiliations', user.hospital_affiliations)}
   {form_row('Lingue','languages', user.languages)}
-  <label>Disponibilità (testo libero)<textarea name="availability" rows="3">{user.availability or ''}</textarea></label>
-  <label>Bio (breve)<textarea name="bio" rows="4">{user.bio or ''}</textarea></label>
+  <label>Disponibilità<textarea name="availability" rows="3">{user.availability or ''}</textarea></label>
+  <label>Bio<textarea name="bio" rows="4">{user.bio or ''}</textarea></label>
   <button class="button primary" type="submit">Salva</button>
 </form>"""
     return layout(user, content, "Onboarding — Team Orthonext")
@@ -253,7 +284,9 @@ def surgeons_list(request: Request, q: Optional[str] = None):
         stmt = select(User)
         if q:
             like = f"%{q.lower()}%"
-            stmt = stmt.where((User.full_name.ilike(like)) | (User.sub_specialties.ilike(like)) | (User.region.ilike(like)) | (User.city.ilike(like)) | (User.hospital_affiliations.ilike(like)))
+            stmt = stmt.where((User.full_name.ilike(like)) | (User.sub_specialties.ilike(like)) |
+                              (User.region.ilike(like)) | (User.city.ilike(like)) |
+                              (User.hospital_affiliations.ilike(like)))
         users = s.exec(stmt.order_by(User.created_at.desc())).all()
         me = s.get(User, uid) if uid else None
     cards = []
@@ -279,6 +312,17 @@ def surgeons_list(request: Request, q: Optional[str] = None):
 </form>
 <div class="grid">{''.join(cards)}</div>"""
     return layout(me, content, "Chirurghi — Team Orthonext")
+
+# ============================================================
+# TEAM INVITI / INBOX
+# ============================================================
+
+class TeamLink(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    from_user_id: int = Field(foreign_key="user.id")
+    to_user_id: int = Field(foreign_key="user.id")
+    status: str = Field(default="pending")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 @app.post("/team/request")
 def team_request(request: Request, to_user_id: int = Form(...)):
@@ -308,39 +352,4 @@ def inbox(request: Request):
     uid = require_login(request)
     with Session(engine) as s:
         incoming = s.exec(select(TeamLink).where(TeamLink.to_user_id == uid).order_by(TeamLink.created_at.desc())).all()
-        outgoing = s.exec(select(TeamLink).where(TeamLink.from_user_id == uid).order_by(TeamLink.created_at.desc())).all()
-        me = s.get(User, uid)
-    def row_in(l):
-        return f"""<div class="card">
-        <p>Invito da <a href="/user/{l.from_user_id}">#{l.from_user_id}</a> — stato: <strong>{l.status}</strong></p>
-        {('<form method="post" action="/team/respond"><input type="hidden" name="link_id" value="'+str(l.id)+'"><button class="button small" name="action" value="accepted">Accetta</button> <button class="button small" name="action" value="declined">Rifiuta</button></form>' if l.status=='pending' else '')}
-        </div>"""
-    def row_out(l):
-        return f"""<div class="card"><p>Hai invitato <a href="/user/{l.to_user_id}">#{l.to_user_id}</a> — stato: <strong>{l.status}</strong></p></div>"""
-    content = f"""
-<h2>Inbox inviti</h2>
-<h3>In arrivo</h3>
-<div class="stack">{''.join(map(row_in, incoming)) or '<p>Nessun invito in arrivo.</p>'}</div>
-<h3>Inviati</h3>
-<div class="stack">{''.join(map(row_out, outgoing)) or '<p>Nessun invito inviato.</p>'}</div>"""
-    return layout(me, content, "Inbox — Team Orthonext")
-
-@app.get("/user/{user_id}", response_class=HTMLResponse)
-def view_user(user_id: int, request: Request):
-    with Session(engine) as s:
-        user = s.get(User, user_id)
-        me = s.get(User, get_current_user_id(request)) if get_current_user_id(request) else None
-    if not user:
-        raise HTTPException(status_code=404, detail="Utente non trovato")
-    content = f"""
-<h2>{user.full_name}</h2>
-<div class="card">
-  <p><strong>Specialità:</strong> {user.specialty}</p>
-  <p><strong>Sottospecialità:</strong> {user.sub_specialties}</p>
-  <p><strong>Regione:</strong> {user.region} — {user.city}</p>
-  <p><strong>Ospedali:</strong> {user.hospital_affiliations}</p>
-  <p><strong>Lingue:</strong> {user.languages}</p>
-  <p><strong>Disponibilità:</strong> {user.availability}</p>
-  <p><strong>Bio:</strong> {user.bio}</p>
-</div>"""
-    return layout(me, content, f"{user.full_name} — Team Orthonext")
+        outgoing = s.exec(select(TeamLink).where(TeamLink.from_user_id ==
