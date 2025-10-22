@@ -1,77 +1,16 @@
-# --- Team Orthonext: FastAPI single-file (no static writes, Render-ready) ---
+# --- Team Orthonext (DEMO IN-MEMORY) ---
+# Funziona su Render senza scrivere su disco: dati volatili finché il servizio resta attivo.
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
 from starlette.middleware.sessions import SessionMiddleware
-
-from sqlmodel import SQLModel, Field, Session, select, create_engine
-
-from typing import Optional
-from datetime import datetime
+from typing import Optional, Dict, List
 from passlib.hash import bcrypt
-import os, pathlib
+import os, itertools
 
 app = FastAPI()
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("APP_SECRET", "CAMBIA_QUESTA_STRINGA_LUNGA_RANDOM"))
 
-# ===== Sessions =====
-SECRET = os.getenv("APP_SECRET", "CAMBIA_QUESTA_STRINGA_LUNGA_RANDOM")
-app.add_middleware(SessionMiddleware, secret_key=SECRET)
-
-# ===== Database (persistent se hai un Disk su /data) =====
-# Su Render -> Environment:
-#   DATABASE_URL = sqlite:////data/db.sqlite3   (consigliato con Disk)
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/db.sqlite3")
-if DATABASE_URL.startswith("sqlite:////"):
-    db_path = DATABASE_URL.replace("sqlite:////", "/")
-elif DATABASE_URL.startswith("sqlite:///"):
-    db_path = DATABASE_URL.replace("sqlite:///", "")
-else:
-    db_path = None
-if db_path:
-    pathlib.Path(os.path.dirname(db_path) or ".").mkdir(parents=True, exist_ok=True)
-
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-
-# ===== Models =====
-class TeamLink(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    from_user_id: int = Field(foreign_key="user.id")
-    to_user_id: int = Field(foreign_key="user.id")
-    status: str = Field(default="pending")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class User(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    email: str = Field(index=True, unique=True)
-    password_hash: str
-    full_name: str = Field(default="")
-    specialty: str = Field(default="Ortopedia")
-    sub_specialties: str = Field(default="")
-    region: str = Field(default="")
-    city: str = Field(default="")
-    hospital_affiliations: str = Field(default="")
-    languages: str = Field(default="Italiano, English")
-    bio: str = Field(default="")
-    availability: str = Field(default="")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-# ===== Auth utils =====
-SESSION_KEY = "session_user_id"
-def hash_password(pw: str) -> str: return bcrypt.hash(pw)
-def verify_password(pw: str, hashed: str) -> bool: return bcrypt.verify(pw, hashed)
-def get_current_user_id(request: Request) -> Optional[int]: return request.session.get(SESSION_KEY)
-def login_user(request: Request, user_id: int) -> None: request.session[SESSION_KEY] = user_id
-def logout_user(request: Request) -> None: request.session.pop(SESSION_KEY, None)
-def require_login(request: Request) -> int:
-    uid = get_current_user_id(request)
-    if not uid: raise HTTPException(status_code=401, detail="Login richiesto")
-    return uid
-
-# ===== Startup =====
-@app.on_event("startup")
-def on_startup():
-    SQLModel.metadata.create_all(engine)
-
-# ===== Base layout (CSS inline: niente /static) =====
+# ===== CSS inline (niente /static) =====
 BASE_CSS = """*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#f7f7fb;color:#111}
 a{color:#0b66ff;text-decoration:none}.logo{font-weight:800;font-size:20px}.logo span{color:#0b66ff}
 .container{max-width:980px;margin:0 auto;padding:16px}
@@ -102,39 +41,46 @@ def layout(user, content, title="Team Orthonext"):
 <body>
 <header class="container header"><a href="/" class="logo">Team <span>Orthonext</span></a><nav>{nav}</nav></header>
 <main class="container">{content}</main>
-<footer class="container footer"><small>© 2025 Orthonext • GDPR-friendly MVP</small></footer>
+<footer class="container footer"><small>© 2025 Orthonext • DEMO (dati non persistenti)</small></footer>
 </body></html>"""
 
-def home_tpl(user):
-    return f"""
+# ===== Storage in-memory =====
+User = Dict[str, str]  # keys: id,email,full_name,hash,specialty,subs,region,city,hosp,languages,bio,availability
+USERS: Dict[int, User] = {}
+TEAM_LINKS: List[Dict[str,int]] = []  # {id, from_id, to_id, status}
+_uid = itertools.count(1)
+_linkid = itertools.count(1)
+
+SESSION_KEY = "session_user_id"
+
+def current_user(request: Request) -> Optional[User]:
+    uid = request.session.get(SESSION_KEY)
+    return USERS.get(uid) if uid else None
+
+def require_login(request: Request) -> int:
+    uid = request.session.get(SESSION_KEY)
+    if not uid: raise HTTPException(status_code=401, detail="Login richiesto")
+    return uid
+
+# ===== Health =====
+@app.get("/health", response_class=PlainTextResponse)
+def health(): return "ok"
+
+# ===== Home =====
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    return layout(current_user(request), f"""
 <section class="hero">
   <h1>Fai squadra con i migliori <em>chirurghi ortopedici</em>.</h1>
   <p>Registrati, crea il profilo e trova colleghi per sala operatoria e progetti.</p>
-  {('<p><a class="button" href="/surgeons">Cerca colleghi</a> <a class="button" href="/inbox">Inbox inviti</a></p>' if user else '<p><a class="button primary" href="/register">Crea il mio profilo</a></p>')}
-</section>"""
+  {('<p><a class="button" href="/surgeons">Cerca colleghi</a> <a class="button" href="/inbox">Inbox inviti</a></p>' if current_user(request) else '<p><a class="button primary" href="/register">Crea il mio profilo</a></p>')}
+</section>
+""")
 
-def form_row(label, name, value="", type_="text"):
-    if type_ == "textarea":
-        return f'<label>{label}<textarea name="{name}" rows="4">{value or ""}</textarea></label>'
-    return f'<label>{label}<input type="{type_}" name="{name}" value="{value or ""}"></label>'
-
-# ===== Routes =====
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    uid = get_current_user_id(request)
-    user = None
-    if uid:
-        with Session(engine) as s:
-            user = s.get(User, uid)
-    return layout(user, home_tpl(user))
-
-@app.get("/health", response_class=PlainTextResponse)
-def health():
-    return "ok"
-
+# ===== Auth =====
 @app.get("/register", response_class=HTMLResponse)
 def register_form(request: Request):
-    content = """
+    return layout(None, """
 <h2>Registrati</h2>
 <form method="post" class="card form">
   <label>Email<input type="email" name="email" required></label>
@@ -142,141 +88,142 @@ def register_form(request: Request):
   <label>Password<input type="password" name="password" required></label>
   <button class="button primary" type="submit">Crea account</button>
   <p>Hai già un account? <a href="/login">Accedi</a></p>
-</form>"""
-    return layout(None, content, "Registrazione — Team Orthonext")
+</form>
+""", "Registrazione — Team Orthonext")
 
 @app.post("/register")
 def register(request: Request, email: str = Form(...), full_name: str = Form(""), password: str = Form(...)):
     email = email.strip().lower()
-    with Session(engine) as s:
-        exists = s.exec(select(User).where(User.email == email)).first()
-        if exists:
-            return HTMLResponse(layout(None, "<p class='card error'>Email già registrata.</p>"), status_code=400)
-        user = User(email=email, full_name=full_name, password_hash=hash_password(password))
-        s.add(user); s.commit(); s.refresh(user)
-        login_user(request, user.id)
+    # check duplicate
+    if any(u["email"] == email for u in USERS.values()):
+        return HTMLResponse(layout(None, "<p class='card error'>Email già registrata.</p>"), status_code=400)
+    uid = next(_uid)
+    USERS[uid] = {
+        "id": str(uid),
+        "email": email,
+        "full_name": full_name,
+        "hash": bcrypt.hash(password),
+        "specialty": "Ortopedia",
+        "subs": "",
+        "region": "",
+        "city": "",
+        "hosp": "",
+        "languages": "Italiano, English",
+        "bio": "",
+        "availability": ""
+    }
+    request.session[SESSION_KEY] = uid
     return RedirectResponse(url="/onboarding", status_code=303)
 
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request):
-    content = """
+    return layout(None, """
 <h2>Login</h2>
 <form method="post" class="card form">
   <label>Email<input type="email" name="email" required></label>
   <label>Password<input type="password" name="password" required></label>
   <button class="button primary" type="submit">Accedi</button>
   <p>Nuovo qui? <a href="/register">Registrati</a></p>
-</form>"""
-    return layout(None, content, "Login — Team Orthonext")
+</form>
+""", "Login — Team Orthonext")
 
 @app.post("/login")
 def login(request: Request, email: str = Form(...), password: str = Form(...)):
     email = email.strip().lower()
-    with Session(engine) as s:
-        user = s.exec(select(User).where(User.email == email)).first()
-        if not user or not verify_password(password, user.password_hash):
-            return HTMLResponse(layout(None, "<p class='card error'>Credenziali non valide.</p>"), status_code=401)
-        login_user(request, user.id)
-    return RedirectResponse(url="/", status_code=303)
+    for uid, u in USERS.items():
+        if u["email"] == email and bcrypt.verify(password, u["hash"]):
+            request.session[SESSION_KEY] = uid
+            return RedirectResponse(url="/", status_code=303)
+    return HTMLResponse(layout(None, "<p class='card error'>Credenziali non valide.</p>"), status_code=401)
 
 @app.get("/logout")
 def logout(request: Request):
-    logout_user(request)
+    request.session.pop(SESSION_KEY, None)
     return RedirectResponse(url="/", status_code=303)
+
+# ===== Onboarding / Profilo =====
+def form_row(label, name, value="", type_="text"):
+    if type_ == "textarea":
+        return f'<label>{label}<textarea name="{name}" rows="4">{value or ""}</textarea></label>'
+    return f'<label>{label}<input type="{type_}" name="{name}" value="{value or ""}"></label>'
 
 @app.get("/onboarding", response_class=HTMLResponse)
 def onboarding_form(request: Request):
-    uid = get_current_user_id(request)
-    if not uid:
-        return RedirectResponse(url="/login", status_code=303)
-    with Session(engine) as s:
-        user = s.get(User, uid)
+    uid = require_login(request)
+    u = USERS[uid]
     content = f"""
 <h2>Onboarding</h2>
 <form method="post" class="card form">
-  {form_row('Specialità principale','specialty', user.specialty)}
-  {form_row('Sottospecialità (virgole)','sub_specialties', user.sub_specialties)}
-  {form_row('Regione','region', user.region)}
-  {form_row('Città','city', user.city)}
-  {form_row('Ospedali / Strutture','hospital_affiliations', user.hospital_affiliations)}
-  {form_row('Lingue','languages', user.languages)}
-  <label>Disponibilità<textarea name="availability" rows="3">{user.availability or ''}</textarea></label>
-  <label>Bio<textarea name="bio" rows="4">{user.bio or ''}</textarea></label>
+  {form_row('Specialità principale','specialty', u['specialty'])}
+  {form_row('Sottospecialità (virgole)','subs', u['subs'])}
+  {form_row('Regione','region', u['region'])}
+  {form_row('Città','city', u['city'])}
+  {form_row('Ospedali / Strutture','hosp', u['hosp'])}
+  {form_row('Lingue','languages', u['languages'])}
+  <label>Disponibilità<textarea name="availability" rows="3">{u['availability']}</textarea></label>
+  <label>Bio<textarea name="bio" rows="4">{u['bio']}</textarea></label>
   <button class="button primary" type="submit">Salva</button>
 </form>"""
-    return layout(user, content, "Onboarding — Team Orthonext")
+    return layout(u, content, "Onboarding — Team Orthonext")
 
 @app.post("/onboarding")
 def onboarding(request: Request,
                specialty: str = Form("Ortopedia"),
-               sub_specialties: str = Form(""),
+               subs: str = Form(""),
                region: str = Form(""),
                city: str = Form(""),
-               hospital_affiliations: str = Form(""),
+               hosp: str = Form(""),
                languages: str = Form("Italiano, English"),
                availability: str = Form(""),
                bio: str = Form("")):
     uid = require_login(request)
-    with Session(engine) as s:
-        user = s.get(User, uid)
-        user.specialty = specialty
-        user.sub_specialties = sub_specialties
-        user.region = region
-        user.city = city
-        user.hospital_affiliations = hospital_affiliations
-        user.languages = languages
-        user.availability = availability
-        user.bio = bio
-        s.add(user); s.commit()
+    u = USERS[uid]
+    u.update(dict(specialty=specialty, subs=subs, region=region, city=city,
+                  hosp=hosp, languages=languages, availability=availability, bio=bio))
     return RedirectResponse(url="/profile", status_code=303)
 
 @app.get("/profile", response_class=HTMLResponse)
-def my_profile(request: Request):
+def profile(request: Request):
     uid = require_login(request)
-    with Session(engine) as s:
-        user = s.get(User, uid)
+    u = USERS[uid]
     content = f"""
 <h2>Il mio profilo</h2>
 <div class="card">
-  <h3>{user.full_name}</h3>
-  <p><strong>Specialità:</strong> {user.specialty}</p>
-  <p><strong>Sottospecialità:</strong> {user.sub_specialties}</p>
-  <p><strong>Regione:</strong> {user.region} — {user.city}</p>
-  <p><strong>Ospedali:</strong> {user.hospital_affiliations}</p>
-  <p><strong>Lingue:</strong> {user.languages}</p>
-  <p><strong>Disponibilità:</strong> {user.availability}</p>
-  <p><strong>Bio:</strong> {user.bio}</p>
+  <h3>{u['full_name']}</h3>
+  <p><strong>Specialità:</strong> {u['specialty']}</p>
+  <p><strong>Sottospecialità:</strong> {u['subs']}</p>
+  <p><strong>Regione:</strong> {u['region']} — {u['city']}</p>
+  <p><strong>Ospedali:</strong> {u['hosp']}</p>
+  <p><strong>Lingue:</strong> {u['languages']}</p>
+  <p><strong>Disponibilità:</strong> {u['availability']}</p>
+  <p><strong>Bio:</strong> {u['bio']}</p>
 </div>
 <p><a class="button" href="/onboarding">Modifica</a></p>"""
-    return layout(user, content, "Profilo — Team Orthonext")
+    return layout(u, content, "Profilo — Team Orthonext")
 
+# ===== Directory & Inviti (semplici) =====
 @app.get("/surgeons", response_class=HTMLResponse)
-def surgeons_list(request: Request, q: Optional[str] = None):
-    uid = get_current_user_id(request)
-    with Session(engine) as s:
-        stmt = select(User)
-        if q:
-            like = f"%{q.lower()}%"
-            stmt = stmt.where((User.full_name.ilike(like)) |
-                              (User.sub_specialties.ilike(like)) |
-                              (User.region.ilike(like)) |
-                              (User.city.ilike(like)) |
-                              (User.hospital_affiliations.ilike(like)))
-        users = s.exec(stmt.order_by(User.created_at.desc())).all()
-        me = s.get(User, uid) if uid else None
+def surgeons(request: Request, q: Optional[str] = None):
+    me = current_user(request)
+    lst = list(USERS.values())
+    if q:
+        ql = q.lower()
+        lst = [u for u in lst if ql in (u["full_name"]+u["subs"]+u["region"]+u["city"]+u["hosp"]).lower()]
     cards = []
-    for u in users:
-        invite = f"""
-        <form method="post" action="/team/request">
-          <input type="hidden" name="to_user_id" value="{u.id}">
-          <button class="button small">Invita nel mio team</button>
-        </form>""" if me and me.id != u.id else ""
+    for u in lst:
+        invite = ""
+        if me and me["id"] != u["id"]:
+            invite = f"""
+            <form method="post" action="/team/request">
+              <input type="hidden" name="to_id" value="{u['id']}">
+              <button class="button small">Invita nel mio team</button>
+            </form>"""
         cards.append(f"""
         <div class="card">
-          <h3><a href="/user/{u.id}">{u.full_name}</a></h3>
-          <p><strong>{u.specialty}</strong> — {u.sub_specialties}</p>
-          <p>{u.region} • {u.city}</p>
-          <p><small>Ospedali: {u.hospital_affiliations}</small></p>
+          <h3>{u['full_name']}</h3>
+          <p><strong>{u['specialty']}</strong> — {u['subs']}</p>
+          <p>{u['region']} • {u['city']}</p>
+          <p><small>Ospedali: {u['hosp']}</small></p>
           {invite}
         </div>""")
     content = f"""
@@ -285,51 +232,44 @@ def surgeons_list(request: Request, q: Optional[str] = None):
   <input type="text" name="q" value="{q or ''}" placeholder="cerca per nome, regione, sottospecialità, ospedale…">
   <button class="button" type="submit">Cerca</button>
 </form>
-<div class="grid">{''.join(cards)}</div>"""
+<div class="grid">{''.join(cards) if cards else '<p>Nessun risultato.</p>'}</div>"""
     return layout(me, content, "Chirurghi — Team Orthonext")
 
 @app.post("/team/request")
-def team_request(request: Request, to_user_id: int = Form(...)):
+def team_request(request: Request, to_id: int = Form(...)):
     uid = require_login(request)
-    if uid == to_user_id:
+    if str(uid) == str(to_id):
         raise HTTPException(status_code=400, detail="Non puoi invitare te stesso.")
-    with Session(engine) as s:
-        link = TeamLink(from_user_id=uid, to_user_id=to_user_id, status="pending")
-        s.add(link); s.commit()
+    TEAM_LINKS.append({"id": next(_linkid), "from_id": uid, "to_id": int(to_id), "status": "pending"})
     return RedirectResponse(url="/inbox", status_code=303)
 
 @app.post("/team/respond")
 def team_respond(request: Request, link_id: int = Form(...), action: str = Form(...)):
     uid = require_login(request)
-    with Session(engine) as s:
-        link = s.get(TeamLink, link_id)
-        if not link or link.to_user_id != uid:
-            raise HTTPException(status_code=404, detail="Richiesta non trovata.")
-        if action not in ["accepted", "declined"]:
-            raise HTTPException(status_code=400, detail="Azione non valida.")
-        link.status = action
-        s.add(link); s.commit()
+    for l in TEAM_LINKS:
+        if l["id"] == link_id and l["to_id"] == uid:
+            l["status"] = "accepted" if action == "accepted" else "declined"
+            break
     return RedirectResponse(url="/inbox", status_code=303)
 
 @app.get("/inbox", response_class=HTMLResponse)
 def inbox(request: Request):
     uid = require_login(request)
-    with Session(engine) as s:
-        incoming = s.exec(select(TeamLink).where(TeamLink.to_user_id == uid).order_by(TeamLink.created_at.desc())).all()
-        outgoing = s.exec(select(TeamLink).where(TeamLink.from_user_id == uid).order_by(TeamLink.created_at.desc())).all()
-        me = s.get(User, uid)
-
+    me = USERS[uid]
+    incoming = [l for l in TEAM_LINKS if l["to_id"] == uid]
+    outgoing = [l for l in TEAM_LINKS if l["from_id"] == uid]
     def row_in(l):
-        return f"""<div class="card">
-        <p>Invito da <a href="/user/{l.from_user_id}">#{l.from_user_id}</a> — stato: <strong>{l.status}</strong></p>
-        {('<form method="post" action="/team/respond"><input type="hidden" name="link_id" value="'+str(l.id)+'"><button class="button small" name="action" value="accepted">Accetta</button> <button class="button small" name="action" value="declined">Rifiuta</button></form>' if l.status=='pending' else '')}
-        </div>"""
-
+        f = USERS.get(l["from_id"], {"full_name":"(utente)"})
+        btns = "" if l["status"] != "pending" else f"""
+        <form method="post" action="/team/respond" class="inline">
+          <input type="hidden" name="link_id" value="{l['id']}">
+          <button class="button small" name="action" value="accepted">Accetta</button>
+          <button class="button small" name="action" value="declined">Rifiuta</button>
+        </form>"""
+        return f"""<div class="card"><p>Invito da <strong>{f['full_name']}</strong> — stato: <strong>{l['status']}</strong></p>{btns}</div>"""
     def row_out(l):
-        return f"""<div class="card">
-        <p>Hai invitato <a href="/user/{l.to_user_id}">#{l.to_user_id}</a> — stato: <strong>{l.status}</strong></p>
-        </div>"""
-
+        t = USERS.get(l["to_id"], {"full_name":"(utente)"})
+        return f"""<div class="card"><p>Hai invitato <strong>{t['full_name']}</strong> — stato: <strong>{l['status']}</strong></p></div>"""
     content = f"""
 <h2>Inbox inviti</h2>
 <h3>In arrivo</h3>
@@ -337,23 +277,3 @@ def inbox(request: Request):
 <h3>Inviati</h3>
 <div class="stack">{''.join(map(row_out, outgoing)) or '<p>Nessun invito inviato.</p>'}</div>"""
     return layout(me, content, "Inbox — Team Orthonext")
-
-@app.get("/user/{user_id}", response_class=HTMLResponse)
-def view_user(user_id: int, request: Request):
-    with Session(engine) as s:
-        user = s.get(User, user_id)
-        me = s.get(User, get_current_user_id(request)) if get_current_user_id(request) else None
-    if not user:
-        raise HTTPException(status_code=404, detail="Utente non trovato")
-    content = f"""
-<h2>{user.full_name}</h2>
-<div class="card">
-  <p><strong>Specialità:</strong> {user.specialty}</p>
-  <p><strong>Sottospecialità:</strong> {user.sub_specialties}</p>
-  <p><strong>Regione:</strong> {user.region} — {user.city}</p>
-  <p><strong>Ospedali:</strong> {user.hospital_affiliations}</p>
-  <p><strong>Lingue:</strong> {user.languages}</p>
-  <p><strong>Disponibilità:</strong> {user.availability}</p>
-  <p><strong>Bio:</strong> {user.bio}</p>
-</div>"""
-    return layout(me, content, f"{user.full_name} — Team Orthonext")
