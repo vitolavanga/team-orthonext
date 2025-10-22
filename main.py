@@ -2,7 +2,7 @@
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlmodel import SQLModel, Session, select, Field
+from sqlmodel import SQLModel, Session, select, Field, create_engine
 from typing import Optional
 from datetime import datetime
 from passlib.hash import bcrypt
@@ -58,19 +58,11 @@ else:
 if db_path:
     pathlib.Path(os.path.dirname(db_path) or ".").mkdir(parents=True, exist_ok=True)
 
-from sqlmodel import create_engine
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
 # ============================================================
 # MODELLI DATABASE
 # ============================================================
-
-class TeamLink(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    from_user_id: int = Field(foreign_key="user.id")
-    to_user_id: int = Field(foreign_key="user.id")
-    status: str = Field(default="pending")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -87,8 +79,15 @@ class User(SQLModel, table=True):
     availability: str = Field(default="")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+class TeamLink(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    from_user_id: int = Field(foreign_key="user.id")
+    to_user_id: int = Field(foreign_key="user.id")
+    status: str = Field(default="pending")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
 # ============================================================
-# UTILITY AUTENTICAZIONE
+# AUTENTICAZIONE
 # ============================================================
 
 SESSION_KEY = "session_user_id"
@@ -102,10 +101,6 @@ def require_login(request: Request) -> int:
     if not uid:
         raise HTTPException(status_code=401, detail="Login richiesto")
     return uid
-
-# ============================================================
-# STARTUP
-# ============================================================
 
 @app.on_event("startup")
 def on_startup():
@@ -208,7 +203,7 @@ def logout(request: Request):
     return RedirectResponse(url="/", status_code=303)
 
 # ============================================================
-# PROFILO, ONBOARDING E RICERCA
+# PROFILO E RICERCA
 # ============================================================
 
 @app.get("/onboarding", response_class=HTMLResponse)
@@ -222,13 +217,13 @@ def onboarding_form(request: Request):
 <h2>Onboarding</h2>
 <form method="post" class="card form">
   {form_row('Specialità principale','specialty', user.specialty)}
-  {form_row('Sottospecialità (virgole)','sub_specialties', user.sub_specialties)}
+  {form_row('Sottospecialità','sub_specialties', user.sub_specialties)}
   {form_row('Regione','region', user.region)}
   {form_row('Città','city', user.city)}
-  {form_row('Ospedali / Strutture','hospital_affiliations', user.hospital_affiliations)}
+  {form_row('Ospedali','hospital_affiliations', user.hospital_affiliations)}
   {form_row('Lingue','languages', user.languages)}
-  <label>Disponibilità<textarea name="availability" rows="3">{user.availability or ''}</textarea></label>
-  <label>Bio<textarea name="bio" rows="4">{user.bio or ''}</textarea></label>
+  {form_row('Disponibilità','availability', user.availability, 'textarea')}
+  {form_row('Bio','bio', user.bio, 'textarea')}
   <button class="button primary" type="submit">Salva</button>
 </form>"""
     return layout(user, content, "Onboarding — Team Orthonext")
@@ -284,9 +279,13 @@ def surgeons_list(request: Request, q: Optional[str] = None):
         stmt = select(User)
         if q:
             like = f"%{q.lower()}%"
-            stmt = stmt.where((User.full_name.ilike(like)) | (User.sub_specialties.ilike(like)) |
-                              (User.region.ilike(like)) | (User.city.ilike(like)) |
-                              (User.hospital_affiliations.ilike(like)))
+            stmt = stmt.where(
+                (User.full_name.ilike(like))
+                | (User.sub_specialties.ilike(like))
+                | (User.region.ilike(like))
+                | (User.city.ilike(like))
+                | (User.hospital_affiliations.ilike(like))
+            )
         users = s.exec(stmt.order_by(User.created_at.desc())).all()
         me = s.get(User, uid) if uid else None
     cards = []
@@ -314,15 +313,8 @@ def surgeons_list(request: Request, q: Optional[str] = None):
     return layout(me, content, "Chirurghi — Team Orthonext")
 
 # ============================================================
-# TEAM INVITI / INBOX
+# TEAM / INBOX / PROFILI
 # ============================================================
-
-class TeamLink(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    from_user_id: int = Field(foreign_key="user.id")
-    to_user_id: int = Field(foreign_key="user.id")
-    status: str = Field(default="pending")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 @app.post("/team/request")
 def team_request(request: Request, to_user_id: int = Form(...)):
@@ -351,5 +343,15 @@ def team_respond(request: Request, link_id: int = Form(...), action: str = Form(
 def inbox(request: Request):
     uid = require_login(request)
     with Session(engine) as s:
-        incoming = s.exec(select(TeamLink).where(TeamLink.to_user_id == uid).order_by(TeamLink.created_at.desc())).all()
-        outgoing = s.exec(select(TeamLink).where(TeamLink.from_user_id ==
+        incoming = s.exec(
+            select(TeamLink).where(TeamLink.to_user_id == uid).order_by(TeamLink.created_at.desc())
+        ).all()
+        outgoing = s.exec(
+            select(TeamLink).where(TeamLink.from_user_id == uid).order_by(TeamLink.created_at.desc())
+        ).all()
+        me = s.get(User, uid)
+
+    def row_in(l):
+        return f"""<div class="card">
+        <p>Invito da <a href="/user/{l.from_user_id}">#{l.from_user_id}</a> — stato: <strong>{l.status}</strong></p>
+        {('<form method="post" action="/team/respond"><input type="hidden" name="link_id" value="'+str(l.id)+'"><button class="button small" name="action" value="accepted">Accetta</button> <button class="button small" name
