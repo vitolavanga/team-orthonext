@@ -140,68 +140,73 @@ def form_row(label, name, value="", type_="text"):
 # ============================================================
 # ROTTE PRINCIPALI
 # ============================================================
-
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    uid = get_current_user_id(request)
-    user = None
-    if uid:
-        with Session(engine) as s:
-            user = s.get(User, uid)
-    return layout(user, home_tpl(user))
-
-@app.get("/register", response_class=HTMLResponse)
-def register_form(request: Request):
-    content = """
-<h2>Registrati</h2>
-<form method="post" class="card form">
-  <label>Email<input type="email" name="email" required></label>
-  <label>Nome e cognome<input type="text" name="full_name" required></label>
-  <label>Password<input type="password" name="password" required></label>
-  <button class="button primary" type="submit">Crea account</button>
-  <p>Hai già un account? <a href="/login">Accedi</a></p>
-</form>"""
-    return layout(None, content, "Registrazione — Team Orthonext")
-
-@app.post("/register")
-def register(request: Request, email: str = Form(...), full_name: str = Form(""), password: str = Form(...)):
-    email = email.strip().lower()
+@app.get("/inbox", response_class=HTMLResponse)
+def inbox(request: Request):
+    uid = require_login(request)
     with Session(engine) as s:
-        exists = s.exec(select(User).where(User.email == email)).first()
-        if exists:
-            return HTMLResponse(layout(None, "<p class='card error'>Email già registrata.</p>"), status_code=400)
-        user = User(email=email, full_name=full_name, password_hash=hash_password(password))
-        s.add(user); s.commit(); s.refresh(user)
-        login_user(request, user.id)
-    return RedirectResponse(url="/onboarding", status_code=303)
+        incoming = s.exec(
+            select(TeamLink)
+            .where(TeamLink.to_user_id == uid)
+            .order_by(TeamLink.created_at.desc())
+        ).all()
+        outgoing = s.exec(
+            select(TeamLink)
+            .where(TeamLink.from_user_id == uid)
+            .order_by(TeamLink.created_at.desc())
+        ).all()
+        me = s.get(User, uid)
 
-@app.get("/login", response_class=HTMLResponse)
-def login_form(request: Request):
-    content = """
-<h2>Login</h2>
-<form method="post" class="card form">
-  <label>Email<input type="email" name="email" required></label>
-  <label>Password<input type="password" name="password" required></label>
-  <button class="button primary" type="submit">Accedi</button>
-  <p>Nuovo qui? <a href="/register">Registrati</a></p>
-</form>"""
-    return layout(None, content, "Login — Team Orthonext")
+    def row_in(l):
+        return (
+            f'<div class="card">'
+            f'<p>Invito da <a href="/user/{l.from_user_id}">#{l.from_user_id}</a> — stato: <strong>{l.status}</strong></p>'
+            + (
+                f'<form method="post" action="/team/respond">'
+                f'<input type="hidden" name="link_id" value="{l.id}">'
+                f'<button class="button small" name="action" value="accepted">Accetta</button> '
+                f'<button class="button small" name="action" value="declined">Rifiuta</button>'
+                f'</form>'
+                if l.status == "pending"
+                else ""
+            )
+            + "</div>"
+        )
 
-@app.post("/login")
-def login(request: Request, email: str = Form(...), password: str = Form(...)):
-    email = email.strip().lower()
+    def row_out(l):
+        return (
+            f'<div class="card">'
+            f'<p>Hai invitato <a href="/user/{l.to_user_id}">#{l.to_user_id}</a> — stato: <strong>{l.status}</strong></p>'
+            f"</div>"
+        )
+
+    content = f"""
+<h2>Inbox inviti</h2>
+<h3>In arrivo</h3>
+<div class="stack">{''.join(map(row_in, incoming)) or '<p>Nessun invito in arrivo.</p>'}</div>
+<h3>Inviati</h3>
+<div class="stack">{''.join(map(row_out, outgoing)) or '<p>Nessun invito inviato.</p>'}</div>"""
+    return layout(me, content, "Inbox — Team Orthonext")
+
+
+@app.get("/user/{user_id}", response_class=HTMLResponse)
+def view_user(user_id: int, request: Request):
     with Session(engine) as s:
-        user = s.exec(select(User).where(User.email == email)).first()
-        if not user or not verify_password(password, user.password_hash):
-            return HTMLResponse(layout(None, "<p class='card error'>Credenziali non valide.</p>"), status_code=401)
-        login_user(request, user.id)
-    return RedirectResponse(url="/", status_code=303)
-
-@app.get("/logout")
-def logout(request: Request):
-    logout_user(request)
-    return RedirectResponse(url="/", status_code=303)
-
+        user = s.get(User, user_id)
+        me = s.get(User, get_current_user_id(request)) if get_current_user_id(request) else None
+    if not user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    content = f"""
+<h2>{user.full_name}</h2>
+<div class="card">
+  <p><strong>Specialità:</strong> {user.specialty}</p>
+  <p><strong>Sottospecialità:</strong> {user.sub_specialties}</p>
+  <p><strong>Regione:</strong> {user.region} — {user.city}</p>
+  <p><strong>Ospedali:</strong> {user.hospital_affiliations}</p>
+  <p><strong>Lingue:</strong> {user.languages}</p>
+  <p><strong>Disponibilità:</strong> {user.availability}</p>
+  <p><strong>Bio:</strong> {user.bio}</p>
+</div>"""
+    return layout(me, content, f"{user.full_name} — Team Orthonext")
 # ============================================================
 # PROFILO E RICERCA
 # ============================================================
